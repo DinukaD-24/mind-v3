@@ -1158,7 +1158,7 @@ async function callAI(systemPrompt, userMsg) {
   // ── Gemini ──
   if (api.provider === 'gemini') {
     const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${api.key}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${api.key}`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

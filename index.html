@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>MIND v3 — Persistent Self-Learning AI</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧠</text></svg>">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/10.7.1/firebase-app-compat.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/10.7.1/firebase-firestore-compat.min.js"></script>
 <style>
@@ -968,9 +969,13 @@ async function startMind() {
   if (!fbKey || !fbProj || !fbApp) { alert('Firebase config is required.'); return; }
   if (!keyGemini && !keyGroq && !keyOR) { alert('Add at least one API key.'); return; }
 
-  // Init Firebase
+  // Init Firebase (safely handle re-initialization)
   try {
-    const app = firebase.initializeApp({
+    // Delete any existing Firebase app before re-initializing
+    if (firebase.apps.length > 0) {
+      await firebase.apps[0].delete();
+    }
+    firebase.initializeApp({
       apiKey: fbKey,
       authDomain: `${fbProj}.firebaseapp.com`,
       projectId: fbProj,
@@ -1221,22 +1226,49 @@ async function callAI(systemPrompt, userMsg) {
 // ═══════════════════════════════════════════════════════
 async function webSearch(query) {
   addThought('srch', `Searching: "${query}"`);
-  // Use DuckDuckGo instant answers (CORS-friendly endpoint)
+  const parts = [];
+
+  // 1. Wikipedia REST summary (primary — fully CORS-friendly)
   try {
-    const res = await fetch(`https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`);
-    const d   = await res.json();
-    let summary = '';
-    if (d.AbstractText) summary += d.AbstractText + ' ';
-    if (d.RelatedTopics?.length) {
-      d.RelatedTopics.slice(0, 3).forEach(t => {
-        if (t.Text) summary += t.Text + ' ';
+    const searchRes = await fetch(
+      `https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(query)}&format=json&origin=*&srlimit=3`
+    );
+    const searchData = await searchRes.json();
+    const hits = searchData.query?.search || [];
+
+    if (hits.length > 0) {
+      // Fetch full summary for the top result
+      const topTitle = encodeURIComponent(hits[0].title);
+      const summRes  = await fetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${topTitle}`);
+      const summData = await summRes.json();
+      if (summData.extract) parts.push(summData.extract);
+
+      // Add text snippets (strip HTML tags) from remaining hits
+      hits.slice(1).forEach(h => {
+        if (h.snippet) parts.push(h.snippet.replace(/<[^>]+>/g, ''));
       });
     }
-    if (d.Answer) summary = d.Answer + ' ' + summary;
-    return summary.trim() || `General knowledge about: ${query}`;
-  } catch {
-    return `Research topic: ${query}. Unable to fetch live results but will reason from training knowledge.`;
+  } catch(e) {
+    addThought('warn', `Wikipedia search error: ${e.message}`);
   }
+
+  // 2. DuckDuckGo instant answers via CORS proxy (supplement)
+  try {
+    const ddgUrl = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`;
+    const ddgRes = await fetch(`https://corsproxy.io/?${encodeURIComponent(ddgUrl)}`);
+    const d = await ddgRes.json();
+    if (d.Answer)       parts.unshift(d.Answer);
+    if (d.AbstractText) parts.push(d.AbstractText);
+    if (d.RelatedTopics?.length) {
+      d.RelatedTopics.slice(0, 2).forEach(t => { if (t.Text) parts.push(t.Text); });
+    }
+  } catch { /* silently skip if proxy unavailable */ }
+
+  if (parts.length > 0) {
+    return parts.join(' ').slice(0, 900);
+  }
+
+  return `Research topic: ${query}. No live data available — reasoning from AI training knowledge.`;
 }
 
 // ═══════════════════════════════════════════════════════
